@@ -7,8 +7,8 @@ import { randomBytes } from 'crypto';
 import { inflateRawSync } from 'zlib';
 import { DOMParser } from 'xmldom';
 import { select } from 'xpath';
-import  * as dbU from '../idp/util/db.js';
-import * as userU from '../idp/util/user.js';
+import  * as dbU from './idp/util/db.js';
+import * as userU from './util/user.js';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcrypt';
 
@@ -34,10 +34,10 @@ dbU.initialOperation();
 
 let idpSigningKey, idpSigningCert;
 try {
-    idpSigningKey = readFileSync(join(__dirname, '../../certificates/idp-signing.key'), 'utf-8');
-    idpSigningCert = readFileSync(join(__dirname, '../../certificates/idp-signing.cert'), 'utf-8');
+    idpSigningKey = readFileSync(join(__dirname, '../certificates/idp-signing.key'), 'utf-8');
+    idpSigningCert = readFileSync(join(__dirname, '../certificates/idp-signing.cert'), 'utf-8');
 } catch {
-    console.error('Certificates not found, running without signing - WILL NOT WORK IN PROD');
+    console.error('Certificates not found, running without signing - this means that the SP cert functionality isn\'t being enforced');
 };
 
 const findUserByUsername = (username) => userU.getUserByUsername(dbU.db, username);
