@@ -88,7 +88,7 @@ function createSAMLResponse(user, inResponseTo, destination) {
         .att('Recipient', destination);
  
     if (inResponseTo) {
-        subjectConfirmation.ele('saml:JubjectConfirmationData').att('InResponseTo', inResponseTo);
+        subjectConfirmation.ele('saml:SubjectConfirmationData').att('InResponseTo', inResponseTo);
     }
 
     const conditions = assertion.ele('saml:Conditions')
