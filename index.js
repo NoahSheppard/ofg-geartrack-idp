@@ -7,10 +7,12 @@ import { randomBytes } from 'crypto';
 import { inflateRawSync } from 'zlib';
 import { DOMParser } from 'xmldom';
 import { select } from 'xpath';
-import  * as dbU from './idp/util/db.js';
+import  * as dbU from './util/db.js';
 import * as userU from './util/user.js';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcrypt';
+import { create } from 'xmlbuilder2';
+import { SignedXml } from 'xml-crypto';
 
 const app = express();
 const PORT = process.env.IDP_PORT || 3000;
@@ -40,9 +42,44 @@ try {
     console.error('Certificates not found, running without signing - this means that the SP cert functionality isn\'t being enforced');
 };
 
-const findUserByUsername = (username) => userU.getUserByUsername(dbU.db, username);
+function stripPemCertificate(pem) {
+    if (!pem) return '';
+    return pem
+        .replace(/-----BEGIN CERTIFICATE-----/g, '')
+        .replace(/-----END CERTIFICATE-----/g, '')
+        .replace(/\r?\n|\r/g, '')
+        .trim();
+}
+
+function signSamlAssertion(xml) {
+    if (!idpSigningKey || !idpSigningCert) return xml;
+
+    const sig = new SignedXml({
+        privateKey: idpSigningKey,
+        publicCert: idpSigningCert
+    });
+
+    sig.signatureAlgorithm = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256';
+    sig.canonicalizationAlgorithm = 'http://www.w3.org/2001/10/xml-exc-c14n#';
+    sig.addReference({
+        xpath: "//*[local-name()='Assertion']",
+        transforms: [
+            'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
+            'http://www.w3.org/2001/10/xml-exc-c14n#'
+        ],
+        digestAlgorithm: 'http://www.w3.org/2001/04/xmlenc#sha256'
+    });
+
+    sig.computeSignature(xml, {
+        location: { reference: "//*[local-name()='Assertion']", action: 'append' }
+    });
+
+    return sig.getSignedXml();
+}
+
+const findUserByUsername = async (username) => userU.getUserByUsername(dbU.db, username);
 const authenticateUser = async (username, password) => {
-    const user = findUserByUsername(username);
+    const user = await findUserByUsername(username);
     if (!user) return null;
 
     const isValid = await userU.verifyPassword(dbU.db, username, password);
@@ -57,23 +94,33 @@ function createSAMLResponse(user, inResponseTo, destination) {
     const assertionID = '_' + randomBytes(16).toString('hex');
     const responseID = '_' + randomBytes(16).toString('hex');
 
+    const response = create({ version: '1.0', encoding: 'UTF-8' })
+        .ele('samlp:Response', {
+            'xmlns:samlp': 'urn:oasis:names:tc:SAML:2.0:protocol',
+            'xmlns:saml': 'urn:oasis:names:tc:SAML:2.0:assertion',
+            'ID': responseID,
+            'Version': '2.0',
+            'IssueInstant': issueInstant,
+            'Destination': destination
+        });
+
     if (inResponseTo) {
         response.att('InResponseTo', inResponseTo);
     }
 
-    response.ele('saml:Issuer', `http://localhost:${PORT}/metadata`);
+    response.ele('saml:Issuer').txt(`http://localhost:${PORT}/metadata`);
 
     response.ele('samlp:Status')   
         .ele('samlp:StatusCode')
         .att('Value', 'urn:oasis:names:tc:SAML:2.0:status:Success');
     
     const assertion = response.ele('saml:Assertion')
-        .att('smlns:saml', 'urn:oasis:names:tc:SAML:2.0:assertion')
+        .att('xmlns:saml', 'urn:oasis:names:tc:SAML:2.0:assertion')
         .att('ID', assertionID)
         .att('Version', '2.0')
         .att('IssueInstant', issueInstant)
     
-    assertion.ele('saml:Issuer', `http://localhost:${PORT}/metadata`);
+    assertion.ele('saml:Issuer').txt(`http://localhost:${PORT}/metadata`);
 
     const subject = assertion.ele('saml:Subject');
     subject.ele('saml:NameID')
@@ -83,12 +130,12 @@ function createSAMLResponse(user, inResponseTo, destination) {
     const subjectConfirmation = subject.ele('saml:SubjectConfirmation')
         .att('Method', 'urn:oasis:names:tc:SAML:2.0:cm:bearer');
 
-    subjectConfirmation.ele('saml:SubjectConfirmationData')
+    const confirmationData = subjectConfirmation.ele('saml:SubjectConfirmationData')
         .att('NotOnOrAfter', notOnOrAfter)
         .att('Recipient', destination);
  
     if (inResponseTo) {
-        subjectConfirmation.ele('saml:SubjectConfirmationData').att('InResponseTo', inResponseTo);
+        confirmationData.att('InResponseTo', inResponseTo);
     }
 
     const conditions = assertion.ele('saml:Conditions')
@@ -96,13 +143,15 @@ function createSAMLResponse(user, inResponseTo, destination) {
         .att('NotOnOrAfter', notOnOrAfter);
     
     conditions.ele('saml:AudienceRestriction')
-        .ele('saml:Audience', 'geartrack-sp');
+        .ele('saml:Audience')
+        .txt('geartrack-sp');
 
     assertion.ele('saml:AuthnStatement')
         .att('AuthnInstant', issueInstant)
         .att('SessionIndex', sessionIndex)
         .ele('saml:AuthnContext')
-        .ele('saml:AuthnContextClassRef', 'urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport');
+        .ele('saml:AuthnContextClassRef')
+        .txt('urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport');
 
     const attributeStatement = assertion.ele('saml:AttributeStatement');
 
@@ -127,14 +176,12 @@ function createSAMLResponse(user, inResponseTo, destination) {
             .txt(attributes[attrName]);
     })
 
-    return response.end({pretty: false});
+    const xml = response.end().toString();
+    return signSamlAssertion(xml);
 }
 
 app.get('/metadata', (req, res) => {
-    const cert = idpSigningCert ? idpSigningCert
-        .replace(/-----BEGIN CERTIFICATE-----/, '')
-        .replace(/-----END CERTIFICATE-----/, '')
-        .replace(/\n/g, '').trim() : "";
+    const cert = idpSigningCert ? stripPemCertificate(idpSigningCert) : "";
 
     const metadata = `<?xml version="1.0" encoding="UTF-8"?>
 <EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="http://localhost:${PORT}/metadata">
@@ -174,18 +221,12 @@ app.get('/login', (req, res) => {
             <div class="login-form">
                 <h2>Dev Login Portal</h2>
                 <form method="POST" action="/login">
-                    <input type="hidden" name"SAMLRequest" value="${SAMLRequest || ''}" />
-                    <input type="hidden" name"RelayState" value="${RelayState || ''}" />
+                    <input type="hidden" name="SAMLRequest" value="${SAMLRequest || ''}" />
+                    <input type="hidden" name="RelayState" value="${RelayState || ''}" />
                     <input type="username" name="username" placeholder="Username" required />
                     <input type="password" name="password" placeholder="Password" required />
                     <button type="submit">Sign in</button>
                 </form>
-                <div style="margin-top: 20px; font-size: 12px; color: #555;">
-                    <strong>Demo Accts</strong><br>
-                    student1@ofgsstudents.com / password123 <br>
-                    admin@ofg.nsw.edu.au / password123 <br>
-                    teacher1@ofg.nsw.edu.au / password123
-                </div>
             </div>
         </body>
     <html>
@@ -211,13 +252,10 @@ app.post('/login', async (req, res) => {
             return res.redirect(`/sso?SAMLRequest=${SAMLRequest}&RelayState=${RelayState || ''}`);
         }
 
-        res.send(`
-            <h2>Login Successful</h2>
-            <p>Welcome, ${user.profile.displayName}!</p>
-            <a href="/profile">View Profile</a>
-        `);
+        // Redirect to SP if no SAML request
+        return res.redirect(`http://localhost:${SP_PORT}/`);
     } catch (error) {
-        console.error("Login Error: ". error);
+        console.error("Login Error: " + error);
         res.status(500).send(`Login Failed - Logs: \n${error}`)
     }
 });
@@ -234,11 +272,25 @@ app.get('/sso', (req, res) => {
     let inResponseTo = null;
     if (req.query.SAMLRequest) {
         try {
-            const decoded = Buffer.from(req.qurty.SAMLRequest, 'base64');
-            const inflated = inflateRawSync(decoded).toString();
-            const doc = new DOMParser().parseFromString(inflated);
+            const rawRequest = req.query.SAMLRequest;
+            let decodedRequest = rawRequest;
+            try {
+                decodedRequest = decodeURIComponent(rawRequest);
+            } catch {
+                decodedRequest = rawRequest;
+            }
+
+            const decoded = Buffer.from(decodedRequest, 'base64');
+            let xmlRequest = '';
+            try {
+                xmlRequest = inflateRawSync(decoded).toString();
+            } catch {
+                xmlRequest = decoded.toString();
+            }
+
+            const doc = new DOMParser().parseFromString(xmlRequest);
             const idNode = select("//*[local-name()='AuthnRequest']/@ID", doc);
-            if (idNode && idNOde[0]) {
+            if (idNode && idNode[0]) {
                 inResponseTo = idNode[0].value;
             }
         } catch (error) {
