@@ -51,7 +51,7 @@ function stripPemCertificate(pem) {
         .trim();
 }
 
-function signSamlAssertion(xml) {
+function signSamlResponse(xml) {
     if (!idpSigningKey || !idpSigningCert) return xml;
 
     const sig = new SignedXml({
@@ -59,10 +59,11 @@ function signSamlAssertion(xml) {
         publicCert: idpSigningCert
     });
 
+    sig.idAttributes = ['ID'];
     sig.signatureAlgorithm = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256';
     sig.canonicalizationAlgorithm = 'http://www.w3.org/2001/10/xml-exc-c14n#';
     sig.addReference({
-        xpath: "//*[local-name()='Assertion']",
+        xpath: "/*[local-name()='Response']",
         transforms: [
             'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
             'http://www.w3.org/2001/10/xml-exc-c14n#'
@@ -71,7 +72,7 @@ function signSamlAssertion(xml) {
     });
 
     sig.computeSignature(xml, {
-        location: { reference: "//*[local-name()='Assertion']", action: 'append' }
+        location: { reference: "/*[local-name()='Response']", action: 'append' }
     });
 
     return sig.getSignedXml();
@@ -167,17 +168,17 @@ function createSAMLResponse(user, inResponseTo, destination) {
 
     Object.keys(attributes).forEach(attrName => {
         attributeStatement.ele('saml:Attribute')
-            .att('name', attrName)
+            .att('Name', attrName)
             .att('NameFormat', 'urn:oasis:names:tc:SAML:2.0:attrname-format:basic')
-            .ele('samlAttributeValue')
+            .ele('saml:AttributeValue')
             .att('xmlns:xs', 'http://www.w3.org/2001/XMLSchema')
-            .att('xmlns:xsi', 'http://www.w3.org/2001/SMLSchema-instance')
+            .att('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance')
             .att('xsi:type', 'xs:string')
             .txt(attributes[attrName]);
     })
 
     const xml = response.end().toString();
-    return signSamlAssertion(xml);
+    return signSamlResponse(xml);
 }
 
 app.get('/metadata', (req, res) => {
@@ -288,10 +289,12 @@ app.get('/sso', (req, res) => {
                 xmlRequest = decoded.toString();
             }
 
-            const doc = new DOMParser().parseFromString(xmlRequest);
-            const idNode = select("//*[local-name()='AuthnRequest']/@ID", doc);
-            if (idNode && idNode[0]) {
-                inResponseTo = idNode[0].value;
+            if (xmlRequest && xmlRequest.trim().startsWith('<')) {
+                const doc = new DOMParser().parseFromString(xmlRequest);
+                const idNode = select("//*[local-name()='AuthnRequest']/@ID", doc);
+                if (idNode && idNode[0]) {
+                    inResponseTo = idNode[0].value;
+                }
             }
         } catch (error) {
             console.warn('Could not parse SAMLRequest: ', error.message);
