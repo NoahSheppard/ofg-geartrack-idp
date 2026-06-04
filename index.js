@@ -23,10 +23,17 @@ const __dirname = dirname(__filename);
 
 const PROD = false;
 
+function getSafeReturnTo(value) {
+    if (!value || typeof value !== 'string') return null;
+    if (!value.startsWith('/')) return null;
+    if (value.startsWith('//')) return null;
+    return value;
+}
+
 app.use(urlencoded({ extended: true }));
 app.use(json());
 app.use(session({
-    secret: 'secret-to-change-in-prod',
+    secret: 'secret-to-change-in-prod', //please for the love of all things holy, change this. 
     resave: false,
     saveUninitialized: false, 
     cookie: { secure: false }
@@ -204,7 +211,8 @@ app.get('/metadata', (req, res) => {
 });
 
 app.get('/login', (req, res) => {
-    const {SAMLRequest, RelayState} = req.query;
+    const {SAMLRequest, RelayState, returnTo} = req.query;
+    const safeReturnTo = getSafeReturnTo(returnTo);
     res.send(`
     <!DOCTYPE html>
     <html>
@@ -224,6 +232,7 @@ app.get('/login', (req, res) => {
                 <form method="POST" action="/login">
                     <input type="hidden" name="SAMLRequest" value="${SAMLRequest || ''}" />
                     <input type="hidden" name="RelayState" value="${RelayState || ''}" />
+                    <input type="hidden" name="returnTo" value="${safeReturnTo || ''}" />
                     <input type="username" name="username" placeholder="Username" required />
                     <input type="password" name="password" placeholder="Password" required />
                     <button type="submit">Sign in</button>
@@ -235,7 +244,8 @@ app.get('/login', (req, res) => {
 });
 
 app.post('/login', async (req, res) => {
-    const {username, password, SAMLRequest, RelayState} = req.body;
+    const {username, password, SAMLRequest, RelayState, returnTo} = req.body;
+    const safeReturnTo = getSafeReturnTo(returnTo);
 
     try {
         const user = await authenticateUser(username, password);
@@ -244,7 +254,7 @@ app.post('/login', async (req, res) => {
             return res.status(401).send(`
                 <h2>Login Failed</h2>
                 <p>Invalid username or password</p>
-                <a href="/login?SAMLRequest=${SAMLRequest || ''}&RelayState=${RelayState || ''}">Try Again</a>
+                <a href="/login?SAMLRequest=${SAMLRequest || ''}&RelayState=${RelayState || ''}&returnTo=${encodeURIComponent(safeReturnTo || '')}">Try Again</a>
             `);
         }
 
@@ -254,7 +264,7 @@ app.post('/login', async (req, res) => {
         }
 
         // Redirect to SP if no SAML request
-        return res.redirect(`http://localhost:${SP_PORT}/`);
+        return res.redirect(safeReturnTo || `http://localhost:${SP_PORT}/`);
     } catch (error) {
         console.error("Login Error: " + error);
         res.status(500).send(`Login Failed - Logs: \n${error}`)
@@ -324,7 +334,7 @@ app.get('/sso', (req, res) => {
 });
 
 app.get('/profile', (req, res) => {
-    if (!req.session.user) return res.redirect('/login');
+    if (!req.session.user) return res.redirect(`/login?returnTo=${encodeURIComponent(req.originalUrl)}`);
     const user = req.session.user;
     res.send(`
         <h2>User Profile</h2>
@@ -342,10 +352,10 @@ app.get('/logout', (req, res) => {
 });
 
 app.get('/adduser', (req, res) => {
-    if (!req.session.user) return res.redirect('/login');
+    if (!req.session.user) return res.redirect(`/login?returnTo=${encodeURIComponent(req.originalUrl)}`);
     const user = req.session.user;
 
-    if (user.profile.userType = "admin") {
+    if ((user.profile.userType || '').toLowerCase() === 'admin') {
         res.send(`
             <!DOCTYPE html>
             <html>
@@ -374,28 +384,42 @@ app.get('/adduser', (req, res) => {
                 </body>
             <html>
         `);
+    } else {
+        res.status(403).send('<h2>Forbidden</h2><p>Admin access required.</p>');
     }
 });
 
 app.post('/adduser', async (req, res) => {
     const {password, firstName, lastName, userType, role} = req.body;
 
+    const username = lastName.toLowerCase() + firstName[0].toLowerCase();
+    const cleanedUserType = (userType || '').trim();
+    const normalizedUserType = cleanedUserType.toLowerCase();
+    const isStudent = normalizedUserType.startsWith('student');
+    const emailDomain = isStudent ? '@ofgsstudents.com' : '@ofg.nsw.edu.au';
+
     const data = {
-        username: lastName.toLowerCase() + firstName[0].toLowerCase(),
+        username,
         password: password,
         profile: {
             firstName: firstName,
             lastName: lastName, 
             displayName: firstName + " " + lastName, 
-            userType: userType, 
+            userType: cleanedUserType, 
             role: role ? role : '',
-            email: lastName.toLowerCase() + firstName[0].toLowerCase() + role == "student" ? "@ofgsstudents.com" : "@ofg.nsw.edu.au"
+            email: `${username}${emailDomain}`
         }
     }
 
     try {
+        const existingUser = await userU.getUserByUsername(dbU.db, username);
+        if (existingUser) {
+            await userU.updateUserProfile(dbU.db, existingUser.id, data.profile);
+            return res.status(200).send(`<h2>Updated user: ${data.username}`);
+        }
+
         await userU.createUser(dbU.db, data); 
-        res.status(200).send(`<h2>Successfully added user: ${data.username}`);
+        return res.status(200).send(`<h2>Successfully added user: ${data.username}`);
     } catch (error) {
         console.error("AddUser error: ". error);
         res.status(500).send(`Add User failed - Logs: \n${error}`)
