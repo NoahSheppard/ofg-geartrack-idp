@@ -70,6 +70,7 @@ function sanitize(params) {
 
 async function initialOperation() {
     db.exec(`PRAGMA foreign_keys = ON`);
+    db.exec(`PRAGMA journal_mode = WAL`); //WAL implementation
     await createTables();
 }
 

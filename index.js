@@ -345,7 +345,7 @@ app.get('/adduser', (req, res) => {
     if (!req.session.user) return res.redirect('/login');
     const user = req.session.user;
 
-    if (user.profile.userType = "admin") {
+    if (user.profile.userType == "admin") {
         res.send(`
             <!DOCTYPE html>
             <html>
@@ -389,7 +389,7 @@ app.post('/adduser', async (req, res) => {
             displayName: firstName + " " + lastName, 
             userType: userType, 
             role: role ? role : '',
-            email: lastName.toLowerCase() + firstName[0].toLowerCase() + role == "student" ? "@ofgsstudents.com" : "@ofg.nsw.edu.au"
+            email: lastName.toLowerCase() + firstName[0].toLowerCase() + (role === "student" ? "@ofgsstudents.com" : "@ofg.nsw.edu.au")
         }
     }
 
