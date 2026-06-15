@@ -76,6 +76,24 @@ async function getUserByUsername(db, username) {
     };
 }
 
+async function updateUserProfile(db, id, profile) {
+    return dbU.run(
+        db,
+        `UPDATE profiles
+        SET displayName = ?, firstName = ?, lastName = ?, userType = ?, role = ?, email = ?
+        WHERE id = ?`,
+        [
+            profile.displayName,
+            profile.firstName,
+            profile.lastName,
+            profile.userType,
+            profile.role,
+            profile.email,
+            id
+        ]
+    );
+}
+
 async function verifyPassword(db, username, password) {
     const row = await dbU.get(
         db, 
@@ -93,5 +111,6 @@ export {
     deleteUserById,
     deleteUserByUsername,
     getUserByUsername,
+    updateUserProfile,
     verifyPassword
 }
