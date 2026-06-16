@@ -407,7 +407,7 @@ app.post('/adduser', async (req, res) => {
             displayName: firstName + " " + lastName, 
             userType: cleanedUserType, 
             role: role ? role : '',
-            email: lastName.toLowerCase() + firstName[0].toLowerCase() + role === "student" ? "@ofgsstudents.com" : "@ofg.nsw.edu.au"
+            email: lastName.toLowerCase() + firstName[0].toLowerCase() + emailDomain
         }
     }
 
